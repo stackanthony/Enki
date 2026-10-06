@@ -1,6 +1,12 @@
-use std::{fs, io::Write, process::{Child, Stdio}};
 use clap::{Parser, ValueEnum};
-use std::process::Command;
+use std::io;
+use std::process::{ChildStdin, Command};
+use std::{
+    fs,
+    io::Write,
+    process::{Stdio},
+    thread
+};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum EnkiCommand {
@@ -13,7 +19,7 @@ struct Cli {
     image_path: String,
 
     #[arg(num_args = 1..)]
-    command_args: Vec<String>
+    command_args: Vec<String>,
 }
 
 //TODO: enki <command> <image_path> <command_args n+>
@@ -34,23 +40,44 @@ fn run(args: &Cli) {
     let entry_point = args.command_args.first().unwrap();
     println!("Entry point: {}", entry_point);
 
-    let mut child = Command::new(entry_point).stdin(Stdio::piped()).spawn().expect("Failed to spawn child");
-    container_setup(&mut child, &args.image_path, entry_point);
+    let mut child = Command::new("bash")
+        .arg("-i")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to start shell");
+
+    let stdin = child.stdin.take().expect("Failed to open stdin");
+
+    container_setup(stdin, &args.image_path, entry_point);
+
+    let output = child.wait_with_output().expect("Failed to read output");
+    println!("Child output: {}", String::from_utf8_lossy(&output.stdout));
+    // let mut child = Command::new(entry_point).stdin(Stdio::piped()).spawn().expect("Failed to spawn child");
 
     // We need a child process who's chroot'd to the image path defined by args.image_path. chroot
     // then chdir.
-    // we first need to setup the container namespaces and then 
+    // we first need to setup the container namespaces and then
 }
+fn container_setup(mut stdin: ChildStdin, image_path : &str, entry_point: &str) {
+    let _ = writeln!(stdin, "sudo chroot {} {}", image_path, entry_point);
+    let _ = writeln!(stdin, "sudo chdir /");
+    stdin.flush();
 
-fn container_setup(child: &mut Child, image_path: &str, entry_point: &str) {
+    thread::spawn(move || {
+        let mut parent_stdin = io::stdin();
+        if let Err(e) = io::copy(&mut parent_stdin, &mut stdin) {
+            eprintln!("Error forwarding stdin: {}", e);
+        }
+    });
 
-    let byte_vec: &[u8] = &format!("sudo chroot {} {}", image_path, entry_point).into_bytes();
-    println!("Byte vec: {}", std::str::from_utf8(byte_vec).unwrap());
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(byte_vec).expect("Failed to write to stdin of child");
-    }
-
-    let status = child.wait().expect("Failed to wait on child");
-    println!("Child exited with: {}", status);
-    //todo: shim sets up all of the namespaces, pivot root, etc for the container process.
+    // let mut child = Command::new("bash")
+    //     .stdin(Stdio::inherit())
+    //     .stdout(Stdio::inherit())
+    //     .stderr(Stdio::inherit())
+    //     .spawn()
+    // .expect("Failed to start shell");
+    //
+    // let status = child.wait().expect("Failed to wait on child");
 }
