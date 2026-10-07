@@ -7,6 +7,7 @@ use std::{
     process::{Stdio},
     thread
 };
+use nix::unistd::sethostname;
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum EnkiCommand {
@@ -40,44 +41,43 @@ fn run(args: &Cli) {
     let entry_point = args.command_args.first().unwrap();
     println!("Entry point: {}", entry_point);
 
-    let mut child = Command::new("bash")
-        .arg("-i")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+    //TODO: Rewrite raw bash commands into utilizing the nix crate
+    let initial_commands = format!("sudo unshare -p -f --mount-proc=./rootfs/proc \
+        sudo chroot {} {};", args.image_path, entry_point);
+    let child = Command::new("bash")
+        .args(["-c", &initial_commands])
         .spawn()
         .expect("Failed to start shell");
 
-    let stdin = child.stdin.take().expect("Failed to open stdin");
-
-    container_setup(stdin, &args.image_path, entry_point);
-
-    let output = child.wait_with_output().expect("Failed to read output");
-    println!("Child output: {}", String::from_utf8_lossy(&output.stdout));
+    println!("Child pid: {}", child.id());
+    // let stdin = child.stdin.take().expect("Failed to open stdin");
+    child.wait_with_output().expect("Failed to read output");
+    //
+    // // container_setup(stdin, &args.image_path, entry_point);
     // let mut child = Command::new(entry_point).stdin(Stdio::piped()).spawn().expect("Failed to spawn child");
 
     // We need a child process who's chroot'd to the image path defined by args.image_path. chroot
     // then chdir.
     // we first need to setup the container namespaces and then
 }
-fn container_setup(mut stdin: ChildStdin, image_path : &str, entry_point: &str) {
-    let _ = writeln!(stdin, "sudo chroot {} {}", image_path, entry_point);
-    let _ = writeln!(stdin, "sudo chdir /");
-    stdin.flush();
-
-    thread::spawn(move || {
-        let mut parent_stdin = io::stdin();
-        if let Err(e) = io::copy(&mut parent_stdin, &mut stdin) {
-            eprintln!("Error forwarding stdin: {}", e);
-        }
-    });
-
-    // let mut child = Command::new("bash")
-    //     .stdin(Stdio::inherit())
-    //     .stdout(Stdio::inherit())
-    //     .stderr(Stdio::inherit())
-    //     .spawn()
-    // .expect("Failed to start shell");
-    //
-    // let status = child.wait().expect("Failed to wait on child");
-}
+// fn container_setup(mut stdin: ChildStdin, image_path : &str, entry_point: &str) {
+//     let _ = writeln!(stdin, "sudo chroot {} {}", image_path, entry_point);
+//     let _ = writeln!(stdin, "sudo chdir /");
+//     stdin.flush();
+//
+//     thread::spawn(move || {
+//         let mut parent_stdin = io::stdin();
+//         if let Err(e) = io::copy(&mut parent_stdin, &mut stdin) {
+//             eprintln!("Error forwarding stdin: {}", e);
+//         }
+//     });
+//
+//     // let mut child = Command::new("bash")
+//     //     .stdin(Stdio::inherit())
+//     //     .stdout(Stdio::inherit())
+//     //     .stderr(Stdio::inherit())
+//     //     .spawn()
+//     // .expect("Failed to start shell");
+//     //
+//     // let status = child.wait().expect("Failed to wait on child");
+// }
