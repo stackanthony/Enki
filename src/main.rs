@@ -1,13 +1,12 @@
 use clap::{Parser, ValueEnum};
-use std::io;
-use std::process::{ChildStdin, Command};
-use std::{
-    fs,
-    io::Write,
-    process::{Stdio},
-    thread
-};
-use nix::unistd::sethostname;
+use nix::mount::{MsFlags, mount};
+use nix::sched::{CloneFlags, unshare};
+use nix::unistd::{chdir, chroot, sethostname};
+use std::fs;
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 enum EnkiCommand {
@@ -35,49 +34,51 @@ fn main() {
 }
 
 fn run(args: &Cli) {
+    let image_path = PathBuf::from(&args.image_path);
     // asserts path exists
-    assert!(fs::exists(&args.image_path).unwrap());
+    assert!(fs::exists(&image_path).unwrap());
 
     let entry_point = args.command_args.first().unwrap();
     println!("Entry point: {}", entry_point);
 
-    //TODO: Rewrite raw bash commands into utilizing the nix crate
-    let initial_commands = format!("sudo unshare -p -f --mount-proc=./rootfs/proc \
-        sudo chroot {} {};", args.image_path, entry_point);
-    let child = Command::new("bash")
-        .args(["-c", &initial_commands])
-        .spawn()
-        .expect("Failed to start shell");
+    unshare(CloneFlags::CLONE_NEWPID).expect("Failed to create pid namespace");
 
-    println!("Child pid: {}", child.id());
-    // let stdin = child.stdin.take().expect("Failed to open stdin");
-    child.wait_with_output().expect("Failed to read output");
-    //
-    // // container_setup(stdin, &args.image_path, entry_point);
-    // let mut child = Command::new(entry_point).stdin(Stdio::piped()).spawn().expect("Failed to spawn child");
+    let mut cmd = Command::new("/bin/bash");
 
-    // We need a child process who's chroot'd to the image path defined by args.image_path. chroot
-    // then chdir.
-    // we first need to setup the container namespaces and then
+    unsafe {
+        cmd.pre_exec(move || {
+            let flags =
+                CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWUTS;
+
+            unshare(flags)?;
+            mount(
+                None::<&str>,
+                Path::new("/"),
+                None::<&str>,
+                MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+                None::<&str>,
+            )?;
+            chroot(image_path.as_path())?;
+            chdir("/")?;
+
+            sethostname("enki-container")?;
+            mount(
+                Some("proc"),
+                Path::new("/proc"),
+                Some("proc"),
+                MsFlags::empty(),
+                None::<&str>,
+            )?;
+
+            Ok(())
+        });
+    }
+
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let status = child.wait().expect("Failed to wait on child");
+            println!("Child exited with status: {}", status);
+        }
+        Err(e) => println!("Failed to spawn child: {:?}", e),
+    }
 }
-// fn container_setup(mut stdin: ChildStdin, image_path : &str, entry_point: &str) {
-//     let _ = writeln!(stdin, "sudo chroot {} {}", image_path, entry_point);
-//     let _ = writeln!(stdin, "sudo chdir /");
-//     stdin.flush();
-//
-//     thread::spawn(move || {
-//         let mut parent_stdin = io::stdin();
-//         if let Err(e) = io::copy(&mut parent_stdin, &mut stdin) {
-//             eprintln!("Error forwarding stdin: {}", e);
-//         }
-//     });
-//
-//     // let mut child = Command::new("bash")
-//     //     .stdin(Stdio::inherit())
-//     //     .stdout(Stdio::inherit())
-//     //     .stderr(Stdio::inherit())
-//     //     .spawn()
-//     // .expect("Failed to start shell");
-//     //
-//     // let status = child.wait().expect("Failed to wait on child");
-// }
