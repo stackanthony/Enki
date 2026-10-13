@@ -1,8 +1,7 @@
 use std::process::ExitStatus;
 
-use clap::{Error, Subcommand, ValueEnum};
+use clap::{Subcommand};
 
-pub use run::execute_run;
 pub mod run;
 
 #[derive(Subcommand, Debug)]
